@@ -17,17 +17,33 @@ vi.mock('./infrastructure/auth-web-session-rest', () => ({
   restWebSessionGateway: { restore: vi.fn(), revoke: vi.fn() },
 }));
 
+vi.mock('./infrastructure/auth-login-rest', () => ({
+  restAuthLoginGateway: { loginWithPassword: vi.fn() },
+}));
+
+vi.mock('./infrastructure/apollo-session-cache', () => ({
+  apolloAuthSessionCache: { clearCache: vi.fn() },
+}));
+
+import { authSessionChannel } from './application/auth-session-channel';
+import { apolloAuthSessionCache } from './infrastructure/apollo-session-cache';
+import { restAuthLoginGateway } from './infrastructure/auth-login-rest';
 import { restWebSessionGateway } from './infrastructure/auth-web-session-rest';
 import {
   applyCrossTabSessionEvent,
   authSessionStore,
   ensureWebSessionRestored,
   getCurrentAuthSession,
+  loginWithPassword,
+  logoutAuthSessionWithSignOut,
   restoreController,
 } from './auth-session-entry';
 
 const STORAGE_KEY = 'lithography-platform.auth-session.v1';
 const restoreMock = vi.mocked(restWebSessionGateway.restore);
+const revokeMock = vi.mocked(restWebSessionGateway.revoke);
+const restLoginMock = vi.mocked(restAuthLoginGateway.loginWithPassword);
+const clearCacheMock = vi.mocked(apolloAuthSessionCache.clearCache);
 
 function snapshot(accountId: number, nickname: string) {
   return {
@@ -58,6 +74,9 @@ function deferred<T>() {
 describe('跨页事件与在途恢复（本页尚无会话）', () => {
   beforeEach(() => {
     restoreMock.mockReset();
+    revokeMock.mockReset();
+    restLoginMock.mockReset();
+    clearCacheMock.mockReset();
     window.sessionStorage.clear();
     authSessionStore.clearSession();
     // 控制器是模块级单例：每个用例从「无记忆、无在途」开始
@@ -154,5 +173,29 @@ describe('跨页事件与在途恢复（本页尚无会话）', () => {
       applyCrossTabSessionEvent({ type: 'session-replaced', accountId: 900202 }),
     ).resolves.toBe(true);
     expect(getCurrentAuthSession()).toBeNull();
+  });
+
+  it('登录成功后向其他标签页发布换号事件（开启态同步行为保留）', async () => {
+    restLoginMock.mockResolvedValue(snapshot(900202, 'A2'));
+    const publishSpy = vi.spyOn(authSessionChannel, 'publish');
+
+    const view = await loginWithPassword({ loginName: 'a2', loginPassword: 'pw' });
+
+    expect(view.accountId).toBe(900202);
+    expect(publishSpy).toHaveBeenCalledWith({ type: 'session-replaced', accountId: 900202 });
+    publishSpy.mockRestore();
+  });
+
+  it('退出成功后向其他标签页发布退出事件并清缓存（开启态同步行为保留）', async () => {
+    authSessionStore.establishSession(snapshot(900101, 'A1'));
+    revokeMock.mockResolvedValue('ok');
+    const publishSpy = vi.spyOn(authSessionChannel, 'publish');
+
+    await expect(logoutAuthSessionWithSignOut()).resolves.toBe('ok');
+
+    expect(publishSpy).toHaveBeenCalledWith({ type: 'logout' });
+    expect(clearCacheMock).toHaveBeenCalled();
+    expect(getCurrentAuthSession()).toBeNull();
+    publishSpy.mockRestore();
   });
 });

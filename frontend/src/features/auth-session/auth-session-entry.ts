@@ -190,8 +190,11 @@ export async function loginWithPassword(input: Parameters<typeof executeLoginWit
   // 新会话已建立：后续匿名判定不需要再问服务端
   restoreController.markSessionEstablished();
 
-  // 通知其他标签页：共享 Cookie 已指向新会话，旧身份视图必须丢弃（只传事件）
-  authSessionChannel.publish({ type: 'session-replaced', accountId: view.accountId });
+  // 通知其他标签页：共享 Cookie 已指向新会话，旧身份视图必须丢弃（只传事件）。
+  // 跨标签同步是本功能新增行为：功能关闭时不发布事件，保持标签页独立。
+  if (webSessionEnabled) {
+    authSessionChannel.publish({ type: 'session-replaced', accountId: view.accountId });
+  }
 
   return view;
 }
@@ -208,7 +211,11 @@ export async function logoutAuthSessionWithSignOut(): Promise<LogoutAuthSessionO
 
   if (outcome === 'ok') {
     restoreController.markSessionCleared();
-    authSessionChannel.publish({ type: 'logout' });
+
+    // 退出事件发布与功能开关联动：关闭时不广播，保持标签页独立。
+    if (webSessionEnabled) {
+      authSessionChannel.publish({ type: 'logout' });
+    }
   }
 
   return outcome;
@@ -216,6 +223,12 @@ export async function logoutAuthSessionWithSignOut(): Promise<LogoutAuthSessionO
 
 /** 其他标签页的会话事件：只做本地清理，不调用服务端、不接触凭据 */
 export async function applyCrossTabSessionEvent(event: AuthSessionChannelEvent): Promise<boolean> {
+  // 跨标签事件处理是本功能新增行为：功能关闭时整体失效。即使处理函数被直接
+  // 调用，也不得清理本页会话、不得改动恢复状态（保持标签页独立行为）。
+  if (!webSessionEnabled) {
+    return false;
+  }
+
   const current = getCurrentAuthSession();
 
   // 本页还没有会话（启动恢复在途）：事件之前发起的恢复同样必须失效，
@@ -251,6 +264,12 @@ export async function applyCrossTabSessionEvent(event: AuthSessionChannelEvent):
  * 返回取消订阅函数；事件体不含任何凭据，只有 `logout` / `session-replaced`。
  */
 export function startAuthSessionCrossTabSync(): () => void {
+  // 功能关闭时不建立跨标签通道：不订阅、不监听、不处理（也不创建
+  // BroadcastChannel），保持改造前基于 sessionStorage 的标签页独立行为。
+  if (!webSessionEnabled) {
+    return () => undefined;
+  }
+
   return authSessionChannel.subscribe((event) => {
     void applyCrossTabSessionEvent(event).then((changed) => {
       if (!changed) return;

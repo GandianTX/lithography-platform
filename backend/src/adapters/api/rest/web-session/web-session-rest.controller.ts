@@ -113,16 +113,8 @@ export class WebSessionRestController {
     this.assertEnabled();
     this.assertTrustedOrigin(request);
 
-    const loginName = this.readRequiredCredential(
-      body?.loginName,
-      'loginName',
-      MAX_LOGIN_NAME_LENGTH,
-    );
-    const loginPassword = this.readRequiredCredential(
-      body?.loginPassword,
-      'loginPassword',
-      MAX_LOGIN_PASSWORD_LENGTH,
-    );
+    const loginName = this.readLoginName(body?.loginName);
+    const loginPassword = this.readLoginPassword(body?.loginPassword);
 
     let result: Awaited<ReturnType<LoginWithPasswordUsecase['execute']>>;
 
@@ -284,11 +276,10 @@ export class WebSessionRestController {
     }
   }
 
-  private readRequiredCredential(
-    value: unknown,
-    field: 'loginName' | 'loginPassword',
-    maxLength: number,
-  ): string {
+  /**
+   * 登录名沿用既有归一化规则：去除首尾空白后判空与限长。
+   */
+  private readLoginName(value: unknown): string {
     if (typeof value !== 'string') {
       throw this.webSessionError(
         HttpStatus.BAD_REQUEST,
@@ -299,15 +290,57 @@ export class WebSessionRestController {
 
     const trimmed = value.trim();
 
-    if (!trimmed || trimmed.length > maxLength) {
+    if (!trimmed) {
       throw this.webSessionError(
         HttpStatus.BAD_REQUEST,
         WEB_SESSION_REST_CODES.INVALID_INPUT,
-        field === 'loginName' ? '登录名不能为空' : '密码不能为空',
+        '登录名不能为空',
+      );
+    }
+
+    if (trimmed.length > MAX_LOGIN_NAME_LENGTH) {
+      throw this.webSessionError(
+        HttpStatus.BAD_REQUEST,
+        WEB_SESSION_REST_CODES.INVALID_INPUT,
+        '登录名过长',
       );
     }
 
     return trimmed;
+  }
+
+  /**
+   * 密码必须保留客户端提交的原始字符串（与原 GraphQL 登录入口语义一致）：
+   * 只做类型、空值与长度校验，不做 trim、不做任何静默改写；
+   * 校验通过的值原样交给登录用例进入真实密码校验链。
+   * 只含空白的密码不是空值——它会原样进入用例并被真实密码校验拒绝。
+   */
+  private readLoginPassword(value: unknown): string {
+    if (typeof value !== 'string') {
+      throw this.webSessionError(
+        HttpStatus.BAD_REQUEST,
+        WEB_SESSION_REST_CODES.INVALID_INPUT,
+        '登录参数不完整',
+      );
+    }
+
+    if (!value) {
+      throw this.webSessionError(
+        HttpStatus.BAD_REQUEST,
+        WEB_SESSION_REST_CODES.INVALID_INPUT,
+        '密码不能为空',
+      );
+    }
+
+    if (value.length > MAX_LOGIN_PASSWORD_LENGTH) {
+      throw this.webSessionError(
+        HttpStatus.BAD_REQUEST,
+        WEB_SESSION_REST_CODES.INVALID_INPUT,
+        '密码过长',
+      );
+    }
+
+    return value;
   }
 
   /** 登录失败沿用既有领域错误码与 REST 状态映射（AUTH_ERROR/JWT_ERROR → 401）。 */

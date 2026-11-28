@@ -1,12 +1,25 @@
 // src/adapters/api/rest/web-session/web-session-rest.controller.spec.ts
 
 import { SessionRestriction } from '@app-types/auth/session-restriction.types';
-import { AudienceTypeEnum, IdentityTypeEnum, LoginTypeEnum } from '@app-types/models/account.types';
+import {
+  AccountStatus,
+  AudienceTypeEnum,
+  IdentityTypeEnum,
+  LoginTypeEnum,
+} from '@app-types/models/account.types';
+import { UserState } from '@app-types/models/user-info.types';
 import { DomainError, AUTH_ERROR, JWT_ERROR } from '@core/common/errors/domain-error';
 import { HttpException, Logger } from '@nestjs/common';
+import { TokenHelper } from '@modules/auth/token.helper';
+import { AccountService } from '@src/modules/account/base/services/account.service';
 import { FetchUserInfoUsecase } from '@usecases/account/fetch-user-info.usecase';
 import { LoginWithPasswordUsecase } from '@usecases/auth/login-with-password.usecase';
 import { ResolveWebSessionUsecase } from '@usecases/auth/resolve-web-session.usecase';
+import { DecideLoginRoleUsecase } from '@usecases/auth/decide-login-role.usecase';
+import { EnrichLoginWithIdentityUsecase } from '@usecases/auth/enrich-login-with-identity.usecase';
+import { ExecuteLoginFlowUsecase } from '@usecases/auth/execute-login-flow.usecase';
+import { ResolveSessionRestrictionUsecase } from '@usecases/auth/resolve-session-restriction.usecase';
+import type { PinoLogger } from 'nestjs-pino';
 import type { Request, Response } from 'express';
 
 import {
@@ -34,10 +47,13 @@ describe('WebSessionRestController（同源浏览器会话边界）', () => {
     issuer: 'ssts-local',
   };
 
-  const buildController = (options: WebSessionOptions = enabledOptions) =>
+  const buildController = (
+    options: WebSessionOptions = enabledOptions,
+    loginUsecase: LoginWithPasswordUsecase = loginWithPasswordUsecase,
+  ) =>
     new WebSessionRestController(
       options,
-      loginWithPasswordUsecase,
+      loginUsecase,
       resolveWebSessionUsecase,
       fetchUserInfoUsecase,
     );
@@ -181,6 +197,109 @@ describe('WebSessionRestController（同源浏览器会话边界）', () => {
       });
     });
 
+    // 密码与登录名分离：登录名沿用 trim 规则，密码必须保留客户端提交的
+    // 原始字符串（与原 GraphQL 登录入口一致），不得静默改写。
+    it.each([
+      ['前导空格', ' Secret#1'],
+      ['尾随空格', 'Secret#1 '],
+      ['首尾空格', '  Secret#1  '],
+      ['制表符与换行', '\tSecret#1\n'],
+    ])('密码（%s）按原始值原样传入登录用例，不做 trim', async (_label, rawPassword) => {
+      await buildController().login(
+        { loginName: 'a@example.com', loginPassword: rawPassword },
+        request(),
+        response(),
+      );
+
+      expect(loginWithPasswordUsecase.execute).toHaveBeenCalledWith(
+        expect.objectContaining({ loginPassword: rawPassword }),
+      );
+    });
+
+    it('只含空白的密码不是空值：原样传入登录用例（由真实密码校验拒绝）', async () => {
+      await buildController().login(
+        { loginName: 'a@example.com', loginPassword: '   ' },
+        request(),
+        response(),
+      );
+
+      expect(loginWithPasswordUsecase.execute).toHaveBeenCalledTimes(1);
+      expect(loginWithPasswordUsecase.execute).toHaveBeenCalledWith(
+        expect.objectContaining({ loginPassword: '   ' }),
+      );
+    });
+
+    it.each([[undefined], [null], [123], [['Secret#1']], [{}]])(
+      '密码为非字符串（%p）时返回 400，不调用登录用例',
+      async (badPassword) => {
+        const error = await captureError(
+          buildController().login(
+            { loginName: 'a@example.com', loginPassword: badPassword },
+            request(),
+            response(),
+          ),
+        );
+
+        expect(error.getStatus()).toBe(400);
+        expect(error.getResponse()).toMatchObject({ code: WEB_SESSION_REST_CODES.INVALID_INPUT });
+        expect(loginWithPasswordUsecase.execute).not.toHaveBeenCalled();
+      },
+    );
+
+    it('空字符串密码返回 400（密码不能为空），不调用登录用例', async () => {
+      const error = await captureError(
+        buildController().login(
+          { loginName: 'a@example.com', loginPassword: '' },
+          request(),
+          response(),
+        ),
+      );
+
+      expect(error.getStatus()).toBe(400);
+      expect(error.getResponse()).toMatchObject({ code: WEB_SESSION_REST_CODES.INVALID_INPUT });
+      expect(loginWithPasswordUsecase.execute).not.toHaveBeenCalled();
+    });
+
+    it('密码超过长度上限返回 400；恰好等于上限的原值仍原样传入', async () => {
+      const tooLong = 'a'.repeat(513);
+      const error = await captureError(
+        buildController().login(
+          { loginName: 'a@example.com', loginPassword: ` ${tooLong} ` },
+          request(),
+          response(),
+        ),
+      );
+
+      expect(error.getStatus()).toBe(400);
+      expect(error.getResponse()).toMatchObject({ code: WEB_SESSION_REST_CODES.INVALID_INPUT });
+      expect(loginWithPasswordUsecase.execute).not.toHaveBeenCalled();
+
+      const atLimit = ` ${'b'.repeat(510)} `;
+      await buildController().login(
+        { loginName: 'a@example.com', loginPassword: atLimit },
+        request(),
+        response(),
+      );
+
+      // 512 字符以内（含空白）通过校验，且按原始字符串（含空白）传入
+      expect(loginWithPasswordUsecase.execute).toHaveBeenCalledWith(
+        expect.objectContaining({ loginPassword: atLimit }),
+      );
+    });
+
+    it('登录名超长仍按既有 trim 后限长规则返回 400（本轮零改动）', async () => {
+      const error = await captureError(
+        buildController().login(
+          { loginName: ` ${'a'.repeat(513)} `, loginPassword: 'x' },
+          request(),
+          response(),
+        ),
+      );
+
+      expect(error.getStatus()).toBe(400);
+      expect(loginWithPasswordUsecase.execute).not.toHaveBeenCalled();
+    });
+
     it('配置了网页有效期时才传 accessTokenTtl（未配置时保持全局时长语义）', async () => {
       await buildController({ ...enabledOptions, accessTokenTtl: '8h' }).login(
         { loginName: 'a@example.com', loginPassword: 'x' },
@@ -295,6 +414,152 @@ describe('WebSessionRestController（同源浏览器会话边界）', () => {
 
       expect(error.getStatus()).toBe(400);
       expect(loginWithPasswordUsecase.execute).not.toHaveBeenCalled();
+    });
+  });
+
+  /**
+   * 真实认证链（非 mock 判定）：
+   *
+   * 控制器以真实 `LoginWithPasswordUsecase`（真实 `ResolveSessionRestrictionUsecase`
+   * 与真实 `AccountService.verifyPassword` 哈希比对）装配，只替身签发/装配等
+   * 与密码语义无关的下游。用于证明「密码按原始字符串校验」：正确密码前后多一个
+   * 空格时，原始值确实进入认证用例并被真实密码校验链拒绝（401 INVALID_PASSWORD），
+   * 不会因为入口 trim 被当成正确密码。
+   */
+  describe('login 密码原值语义（真实认证链）', () => {
+    const CREATED_AT = new Date('2026-06-01T00:00:00Z');
+    const REAL_PASSWORD = 'RealChain#Pass1';
+
+    const buildRealChainController = (): WebSessionRestController => {
+      const accountQueryService = {
+        findCredentialByLoginName: jest.fn().mockResolvedValue({
+          id: 42,
+          status: AccountStatus.ACTIVE,
+          loginEmail: 'real-chain@example.com',
+          loginPassword: AccountService.hashPasswordWithTimestamp(REAL_PASSWORD, CREATED_AT),
+          credentialVersion: 0,
+          createdAt: CREATED_AT,
+        }),
+        findSessionAuthoritySnapshot: jest.fn().mockResolvedValue({
+          accountId: 42,
+          accountStatus: AccountStatus.ACTIVE,
+          identityHint: IdentityTypeEnum.ENGINEER,
+          mustChangePassword: false,
+          credentialVersion: 0,
+          adminLevel: null,
+          userInfo: {
+            userState: UserState.ACTIVE,
+            accessGroup: [IdentityTypeEnum.ENGINEER],
+            metaDigest: [IdentityTypeEnum.ENGINEER],
+            customerOrganizationId: null,
+          },
+        }),
+      } as unknown as ConstructorParameters<typeof LoginWithPasswordUsecase>[0];
+      const engineerRegistrationQueryService = {
+        findLatestByAccountId: jest.fn().mockResolvedValue(null),
+      } as unknown as ConstructorParameters<typeof ResolveSessionRestrictionUsecase>[0];
+      const organizationMembershipQueryService = {
+        listActiveMembershipsByAccount: jest.fn().mockResolvedValue([]),
+      } as unknown as ConstructorParameters<typeof ResolveSessionRestrictionUsecase>[1];
+      const executeLoginFlowUsecase = {
+        execute: jest.fn().mockResolvedValue({
+          tokens: { accessToken: 'basic-access', refreshToken: 'refresh-token' },
+          credentialVersion: 0,
+          accountId: 42,
+          roleFromHint: IdentityTypeEnum.ENGINEER,
+          accessGroup: [IdentityTypeEnum.ENGINEER],
+          account: {
+            id: 42,
+            loginName: 'real-chain',
+            loginEmail: 'real-chain@example.com',
+            status: AccountStatus.ACTIVE,
+            identityHint: IdentityTypeEnum.ENGINEER,
+            createdAt: CREATED_AT,
+            updatedAt: CREATED_AT,
+          },
+          userInfo: {
+            id: 1,
+            accountId: 42,
+            nickname: '真实链路工程师',
+            avatarUrl: null,
+            createdAt: CREATED_AT,
+            updatedAt: CREATED_AT,
+          },
+        }),
+      } as unknown as ExecuteLoginFlowUsecase;
+      const decideLoginRoleUsecase = {
+        execute: jest.fn().mockReturnValue({
+          finalRole: IdentityTypeEnum.ENGINEER,
+          reason: 'hint',
+        }),
+      } as unknown as DecideLoginRoleUsecase;
+      const tokenHelper = {
+        generateAccessToken: jest.fn().mockReturnValue('signed-access-token'),
+        decodeToken: jest.fn().mockReturnValue({ exp: Math.floor(Date.now() / 1000) + 3600 }),
+      } as unknown as TokenHelper;
+      const enrichLoginWithIdentityUsecase = {
+        execute: jest.fn().mockImplementation((input: { restriction?: SessionRestriction }) => ({
+          accessToken: 'signed-access-token',
+          refreshToken: 'refresh-token',
+          accountId: 42,
+          role: IdentityTypeEnum.ENGINEER,
+          restriction: input.restriction,
+        })),
+      } as unknown as EnrichLoginWithIdentityUsecase;
+      const logger = {
+        setContext: jest.fn(),
+        info: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn(),
+      } as unknown as PinoLogger;
+
+      const realLoginUsecase = new LoginWithPasswordUsecase(
+        accountQueryService,
+        new ResolveSessionRestrictionUsecase(
+          engineerRegistrationQueryService,
+          organizationMembershipQueryService,
+        ),
+        executeLoginFlowUsecase,
+        decideLoginRoleUsecase,
+        enrichLoginWithIdentityUsecase,
+        tokenHelper,
+        logger,
+      );
+
+      return buildController(enabledOptions, realLoginUsecase);
+    };
+
+    it('正确密码通过真实认证链登录成功', async () => {
+      const body = await buildRealChainController().login(
+        { loginName: 'real-chain@example.com', loginPassword: REAL_PASSWORD },
+        request(),
+        response(),
+      );
+
+      expect(body).toMatchObject({
+        accessToken: 'signed-access-token',
+        accountId: 42,
+        role: IdentityTypeEnum.ENGINEER,
+      });
+    });
+
+    it.each([
+      ['前导空格', ` ${REAL_PASSWORD}`],
+      ['尾随空格', `${REAL_PASSWORD} `],
+      ['首尾空格', `  ${REAL_PASSWORD}  `],
+      ['只含空白', '   '],
+    ])('密码（%s）原样进入真实密码校验链，不会被当成正确密码', async (_label, rawPassword) => {
+      const error = await captureError(
+        buildRealChainController().login(
+          { loginName: 'real-chain@example.com', loginPassword: rawPassword },
+          request(),
+          response(),
+        ),
+      );
+
+      expect(error.getStatus()).toBe(401);
+      expect(error.getResponse()).toMatchObject({ code: AUTH_ERROR.INVALID_PASSWORD });
+      expect(JSON.stringify(error.getResponse())).not.toContain(rawPassword);
     });
   });
 
