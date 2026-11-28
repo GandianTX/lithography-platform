@@ -13,15 +13,17 @@ function createHandlerStack(currentPath: string | null = '/customer/repair-reque
     return currentPath;
   });
   const hasAuthSession = vi.fn().mockReturnValue(true);
-  const logoutAuthSession = vi.fn(async () => {
+  const clearAuthSessionLocally = vi.fn(async () => {
     callOrder.push('cleanup');
   });
+  const getCurrentAccessToken = vi.fn<() => string | null>(() => 'current-token');
   const navigateToLogin = vi.fn();
 
   const handleAuthFailure = createGraphQLAuthFailureHandler({
     getCurrentPath,
+    getCurrentAccessToken,
     hasAuthSession,
-    logoutAuthSession,
+    clearAuthSessionLocally,
     navigateToLogin,
     // 使用生产策略合成跳转目标：固定失效原因 + 安全 returnTo。
     resolveSessionExpiredLoginPath,
@@ -30,9 +32,10 @@ function createHandlerStack(currentPath: string | null = '/customer/repair-reque
   return {
     callOrder,
     getCurrentPath,
+    getCurrentAccessToken,
     handleAuthFailure,
     hasAuthSession,
-    logoutAuthSession,
+    clearAuthSessionLocally,
     navigateToLogin,
   };
 }
@@ -46,7 +49,7 @@ describe('global GraphQL auth failure handling', () => {
     stack.handleAuthFailure();
 
     await vi.waitFor(() => {
-      expect(stack.logoutAuthSession).toHaveBeenCalledTimes(1);
+      expect(stack.clearAuthSessionLocally).toHaveBeenCalledTimes(1);
     });
     expect(stack.navigateToLogin).toHaveBeenCalledTimes(1);
   });
@@ -78,7 +81,7 @@ describe('global GraphQL auth failure handling', () => {
   it('navigates only after the cleanup settles so the session is cleared first', async () => {
     let releaseCleanup: () => void = () => {};
     const stack = createHandlerStack();
-    stack.logoutAuthSession.mockImplementation(
+    stack.clearAuthSessionLocally.mockImplementation(
       () =>
         new Promise<void>((resolve) => {
           releaseCleanup = resolve;
@@ -88,7 +91,7 @@ describe('global GraphQL auth failure handling', () => {
     stack.handleAuthFailure();
 
     await vi.waitFor(() => {
-      expect(stack.logoutAuthSession).toHaveBeenCalledTimes(1);
+      expect(stack.clearAuthSessionLocally).toHaveBeenCalledTimes(1);
     });
     expect(stack.navigateToLogin).not.toHaveBeenCalled();
 
@@ -101,7 +104,7 @@ describe('global GraphQL auth failure handling', () => {
 
   it('still navigates to the login page with the reason when the cleanup rejects', async () => {
     const stack = createHandlerStack();
-    stack.logoutAuthSession.mockRejectedValue(new Error('cache reset failed'));
+    stack.clearAuthSessionLocally.mockRejectedValue(new Error('cache reset failed'));
 
     stack.handleAuthFailure();
 
@@ -111,7 +114,7 @@ describe('global GraphQL auth failure handling', () => {
     expect(stack.navigateToLogin).toHaveBeenCalledWith(
       '/login?reason=session-expired&returnTo=%2Fcustomer%2Frepair-requests%2Fnew',
     );
-    expect(stack.logoutAuthSession).toHaveBeenCalledTimes(1);
+    expect(stack.clearAuthSessionLocally).toHaveBeenCalledTimes(1);
   });
 
   it('does not attach a returnTo loop when the expiry happens on the login route', async () => {
@@ -131,7 +134,7 @@ describe('global GraphQL auth failure handling', () => {
 
     stack.handleAuthFailure();
 
-    expect(stack.logoutAuthSession).not.toHaveBeenCalled();
+    expect(stack.clearAuthSessionLocally).not.toHaveBeenCalled();
     expect(stack.navigateToLogin).not.toHaveBeenCalled();
   });
 
@@ -141,14 +144,46 @@ describe('global GraphQL auth failure handling', () => {
     stack.handleAuthFailure();
 
     await vi.waitFor(() => {
-      expect(stack.logoutAuthSession).toHaveBeenCalledTimes(1);
+      expect(stack.clearAuthSessionLocally).toHaveBeenCalledTimes(1);
     });
 
     stack.handleAuthFailure();
 
     await vi.waitFor(() => {
-      expect(stack.logoutAuthSession).toHaveBeenCalledTimes(2);
+      expect(stack.clearAuthSessionLocally).toHaveBeenCalledTimes(2);
     });
     expect(stack.navigateToLogin).toHaveBeenCalledTimes(2);
+  });
+
+  it('ignores a late 401 that belongs to an older token (account switch / re-login)', () => {
+    const stack = createHandlerStack();
+    stack.getCurrentAccessToken.mockReturnValue('new-session-token');
+
+    // 旧请求使用的令牌已不是当前会话的令牌：不得清理、不得跳转
+    stack.handleAuthFailure({ accessToken: 'old-session-token' });
+
+    expect(stack.clearAuthSessionLocally).not.toHaveBeenCalled();
+    expect(stack.navigateToLogin).not.toHaveBeenCalled();
+  });
+
+  it('ignores anonymous failures (no token attached to the request)', () => {
+    const stack = createHandlerStack();
+
+    stack.handleAuthFailure({ accessToken: null });
+
+    expect(stack.clearAuthSessionLocally).not.toHaveBeenCalled();
+    expect(stack.navigateToLogin).not.toHaveBeenCalled();
+  });
+
+  it('still handles the current session failure when the token matches', async () => {
+    const stack = createHandlerStack();
+    stack.getCurrentAccessToken.mockReturnValue('current-token');
+
+    stack.handleAuthFailure({ accessToken: 'current-token' });
+
+    await vi.waitFor(() => {
+      expect(stack.clearAuthSessionLocally).toHaveBeenCalledTimes(1);
+    });
+    expect(stack.navigateToLogin).toHaveBeenCalledTimes(1);
   });
 });

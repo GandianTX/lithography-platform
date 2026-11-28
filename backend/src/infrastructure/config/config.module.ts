@@ -249,12 +249,57 @@ const collectRagDiagnosisRuleErrors = (): string[] => {
   return errors;
 };
 
+/** jsonwebtoken 支持的时长写法（如 `8h` / `28800`）与来源写法（绝对 origin） */
+const WEB_SESSION_TTL_PATTERN = /^\d+(\.\d+)?(ms|s|m|h|d|w|y)?$/i;
+const WEB_SESSION_ORIGIN_PATTERN = /^https?:\/\/[^/\s]+$/i;
+
+const splitCsvEnv = (raw: string | undefined): string[] =>
+  (raw ?? '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+
+const collectWebSessionRuleErrors = (): string[] => {
+  const errors: string[] = [];
+
+  if (parseBooleanInput(process.env.WEB_SESSION_ENABLED) !== true) {
+    // 关闭时不做任何额外要求：既有生产启动行为完全不变
+    return errors;
+  }
+
+  const allowedOrigins = splitCsvEnv(process.env.WEB_SESSION_ALLOWED_ORIGINS);
+
+  if (allowedOrigins.length === 0) {
+    errors.push('WEB_SESSION_ENABLED=true requires WEB_SESSION_ALLOWED_ORIGINS');
+  }
+  if (allowedOrigins.some((origin) => !WEB_SESSION_ORIGIN_PATTERN.test(origin))) {
+    errors.push(
+      'WEB_SESSION_ALLOWED_ORIGINS must be absolute origins like https://app.example.com (comma separated)',
+    );
+  }
+
+  const ttlRaw = getOptionalEnv('WEB_SESSION_ACCESS_TOKEN_TTL');
+  if (ttlRaw && !WEB_SESSION_TTL_PATTERN.test(ttlRaw)) {
+    errors.push('WEB_SESSION_ACCESS_TOKEN_TTL must be a duration like 8h or 28800');
+  }
+
+  // 生产启用 Cookie 必须是 Secure（本地 http 才允许关闭，且必须显式声明）
+  if (parseBooleanInput(process.env.WEB_SESSION_COOKIE_SECURE) !== true) {
+    errors.push(
+      'WEB_SESSION_COOKIE_SECURE must be true in production when WEB_SESSION_ENABLED=true',
+    );
+  }
+
+  return errors;
+};
+
 const collectProductionRuleErrors = (): string[] => {
   return [
     ...collectDbAndCorsRuleErrors(),
     ...collectAiProviderRuleErrors(),
     ...collectFieldEncryptionRuleErrors(),
     ...collectRagDiagnosisRuleErrors(),
+    ...collectWebSessionRuleErrors(),
   ];
 };
 
@@ -421,7 +466,13 @@ const loggerConfig: ConfigFactory = () => {
   return {
     logger: {
       level,
-      redactFields: ['req.headers.authorization'],
+      // 浏览器会话启用后，Cookie / Set-Cookie 都属于凭据载体：与 Authorization 同等脱敏，
+      // 避免令牌片段经访问日志落盘
+      redactFields: [
+        'req.headers.authorization',
+        'req.headers.cookie',
+        'res.headers["set-cookie"]',
+      ],
       file: {
         enabled: !isDev,
         path: logPath,
@@ -701,6 +752,66 @@ const adminAccountResetConfig: ConfigFactory = () => ({
 });
 
 /**
+ * 生成浏览器会话（网页登录保持）配置。
+ *
+ * 语义边界：
+ * - `enabled=false`（默认）：三个 REST 端点不存在，登录/鉴权行为与改造前完全一致，
+ *   不要求任何新增配置，不影响既有生产启动；
+ * - `enabled=true`：必须显式配置可信来源；生产必须 `WEB_SESSION_COOKIE_SECURE=true`；
+ *   配置不匹配时启动即失败，**不静默回退**（避免线上同时存在两套凭据判断）；
+ * - `accessTokenTtl` 为空表示「网页登录沿用全局 `JWT_EXPIRES_IN`」，绝不改全局值；
+ *   8 小时只能由部署侧显式配置，不是代码默认值。
+ */
+const webSessionConfig: ConfigFactory = () => {
+  const enabled = parseBooleanInput(process.env.WEB_SESSION_ENABLED) ?? false;
+  const accessTokenTtl = getOptionalEnv('WEB_SESSION_ACCESS_TOKEN_TTL');
+  const allowedOrigins = splitCsvEnv(process.env.WEB_SESSION_ALLOWED_ORIGINS);
+  const cookieSecure =
+    parseBooleanInput(process.env.WEB_SESSION_COOKIE_SECURE) ?? isProductionEnv();
+
+  if (!enabled) {
+    return {
+      webSession: {
+        enabled: false,
+        accessTokenTtl: undefined,
+        cookieSecure,
+        allowedOrigins,
+      },
+    };
+  }
+
+  const errors: string[] = [];
+
+  if (allowedOrigins.length === 0) {
+    errors.push('WEB_SESSION_ALLOWED_ORIGINS is required when WEB_SESSION_ENABLED=true');
+  }
+  if (allowedOrigins.some((origin) => !WEB_SESSION_ORIGIN_PATTERN.test(origin))) {
+    errors.push(
+      'WEB_SESSION_ALLOWED_ORIGINS must contain absolute origins (https://app.example.com)',
+    );
+  }
+  if (accessTokenTtl && !WEB_SESSION_TTL_PATTERN.test(accessTokenTtl)) {
+    errors.push('WEB_SESSION_ACCESS_TOKEN_TTL must be a duration like 8h or 28800');
+  }
+  if (isProductionEnv() && cookieSecure !== true) {
+    errors.push('WEB_SESSION_COOKIE_SECURE must be true in production');
+  }
+
+  if (errors.length > 0) {
+    throw new Error(`Web session config validation failed:\n- ${errors.join('\n- ')}`);
+  }
+
+  return {
+    webSession: {
+      enabled: true,
+      accessTokenTtl,
+      cookieSecure,
+      allowedOrigins,
+    },
+  };
+};
+
+/**
  * 生成分页配置
  */
 const paginationConfig = () => ({
@@ -732,6 +843,7 @@ export const APP_CONFIG_FACTORIES: readonly ConfigFactory[] = [
   adminAccountResetConfig,
   documentExportConfig,
   jwtConfig,
+  webSessionConfig,
   paginationConfig,
 ];
 

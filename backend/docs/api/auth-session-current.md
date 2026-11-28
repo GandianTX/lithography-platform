@@ -148,6 +148,62 @@ Resolver、Guard、Usecase 不应各自手写不同的 session shape。
 - 工程师待审补充入口：`myEngineerRegistrationStatus`（凭据证明，不使用 JWT）、
   `resubmitEngineerRegistration`（拒绝后重提）。
 
+## 网页登录保持（浏览器会话，`WEB_SESSION_ENABLED`）
+
+网页登录保持是**可选的同源 REST 边界**（`api/auth/web-session`，`WebSessionRestController`），
+与 GraphQL 登录并存，不替代它。开关关闭（默认）时行为与改造前完全一致。
+
+### 开关与行为
+
+- `WEB_SESSION_ENABLED=false`（默认）：三个 REST 路径一律 `404 WEB_SESSION_DISABLED`，
+  不暴露任何会话语义；前端登录继续走既有 `login(input: AuthLoginInput!)` Mutation，
+  会话保存在 `sessionStorage`（仅当前标签页），跨标签页/重启浏览器后需重新登录。
+- `WEB_SESSION_ENABLED=true`：前端登录改走同源 REST `login`；服务端下发 HttpOnly Cookie，
+  新标签页/重启浏览器后由 `restore` 恢复同一会话；退出走 `logout`。
+  业务 GraphQL、REST、上传下载仍只认 `Authorization: Bearer`，Cookie 只被这三个端点读取。
+
+### 端点（全部要求同源 + 可信站点来源）
+
+| 端点                                 | 行为                                                                                                  | Cookie                                                                                                                                                                                                                              |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /api/auth/web-session/login`   | 复用 `LoginWithPasswordUsecase`（与 GraphQL 登录同一套限制规则），`audience=SSTSWEB`                  | **写入** `lithography_web_session`（HttpOnly、SameSite=Lax、`Path=/api/auth/web-session`、生产 `Secure`），Max-Age 取自令牌真实到期（取不到到期事实时失败关闭，返回 `500 WEB_SESSION_PERSISTENCE_UNAVAILABLE`，不用配置值猜测窗口） |
+| `POST /api/auth/web-session/restore` | 只读：验签 + 签发者 + 网页受众 + 有效期，再复用每请求会话复核（账号状态、凭据代次、角色集、受限状态） | **不写也不清 Cookie**，不重签、不延长、不写登录历史；返回原令牌与原到期（**不自动续期**）                                                                                                                                           |
+| `POST /api/auth/web-session/logout`  | 幂等清 Cookie，`204`；不要求令牌有效、不查库                                                          | **清除** `lithography_web_session`                                                                                                                                                                                                  |
+
+三个端点都校验 `Origin`/`Referer` 是否在 `WEB_SESSION_ALLOWED_ORIGINS` 白名单内，
+不在白名单返回 `403 WEB_SESSION_ORIGIN_NOT_ALLOWED`。响应均带 `Cache-Control: no-store`。
+
+### 错误码（`extensions.code`，经统一 REST 错误契约返回）
+
+- `WEB_SESSION_ABSENT`（401）：没有可恢复的 Cookie —— 前端据此按「未登录」处理。
+- `WEB_SESSION_INVALID`（401）：令牌过期或验签不通过。
+- `WEB_SESSION_REVOKED`（401）：会话复核不通过（账号停用、凭据代次变化、角色集变化、令牌缺角色声明）。
+- `WEB_SESSION_ORIGIN_NOT_ALLOWED`（403）：来源不在白名单。
+- `WEB_SESSION_DISABLED`（404）：开关未启用。
+- `WEB_SESSION_INVALID_INPUT`（400）：登录参数缺失/越界。
+- `WEB_SESSION_PERSISTENCE_UNAVAILABLE`（500）：无法确定安全的 Cookie 有效期（失败关闭，不当成未登录）。
+
+除以上映射外，登录失败沿用既有领域错误码与 REST 状态映射（`AUTH_ERROR`/`JWT_ERROR` → 401）；
+数据库等基础设施异常原样上抛为服务错误，**不冒充未登录**。
+
+### 有效期与部署口径
+
+- `WEB_SESSION_ACCESS_TOKEN_TTL` 可选；**正式启用时建议显式配置 `8h`**（网页工作时段口径）。
+- 未配置时沿用全局 `JWT_EXPIRES_IN`；该配置**只影响新的网页登录令牌**，
+  不改变全局 JWT 时长，GraphQL 登录与小程序等其他受众签发不受影响。
+- 恢复永远不续期：令牌到期后新标签页无法恢复，需重新登录（短 TTL 行为已实测）。
+- 生产部署要求：可信 HTTPS（`WEB_SESSION_COOKIE_SECURE=true`，否则 Cookie 不下发 Secure）、
+  前端与 API 同源反代（Cookie 才能在同站内流转）、`WEB_SESSION_ALLOWED_ORIGINS`
+  显式列出确切的站点来源（不用通配）。
+
+### 边界与禁止项
+
+- 不新增数据库结构、不新增迁移：会话事实就是令牌 + 既有账号/凭据复核。
+- **不提供全设备令牌撤销**：`logout` 只清当前浏览器的 Cookie；已签发令牌在到期前仍可通过
+  Bearer 使用。收口手段是既有机制（账号停用、凭据代次变化会让 `restore` 与每请求复核拒绝）。
+- 不把 Cookie 当业务鉴权凭据：除这三个端点外，任何接口都不读取会话 Cookie。
+- 日志不记录密码、Authorization、Cookie、Set-Cookie、令牌片段或带凭据的响应体。
+
 ## 禁止项
 
 - 不在 auth resolver 中直接依赖 modules(service) 或 infrastructure。

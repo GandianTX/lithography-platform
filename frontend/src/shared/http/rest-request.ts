@@ -31,7 +31,11 @@ export async function fetchRestWithAuthRetry(
       headers: token ? { Authorization: `Bearer ${token}` } : undefined,
     });
 
-  let response = await send(readAccessToken());
+  // 本次请求实际使用的令牌：随失效回调一起上报，供装配层忽略
+  // 「切换账号 / 重新登录后旧请求的迟到 401」
+  const attemptedAccessToken = readAccessToken();
+
+  let response = await send(attemptedAccessToken);
 
   if (response.status !== 401) {
     return response;
@@ -42,7 +46,7 @@ export async function fetchRestWithAuthRetry(
   if (!refreshSession) {
     // 没有刷新能力时（如当前 P0 登录链路），仍要宣布一次会话失效，
     // 由 app 装配决定清理与跳转（与 GraphQL 链路同口径）
-    onAuthFailure?.();
+    onAuthFailure?.({ accessToken: attemptedAccessToken });
 
     return response;
   }
@@ -50,7 +54,7 @@ export async function fetchRestWithAuthRetry(
   try {
     await refreshSession();
   } catch {
-    onAuthFailure?.();
+    onAuthFailure?.({ accessToken: attemptedAccessToken });
 
     return response;
   }
@@ -58,6 +62,7 @@ export async function fetchRestWithAuthRetry(
   response = await send(readAccessToken());
 
   if (response.status === 401) {
+    // 重试使用的是刷新后的新令牌，不携带旧令牌信息（保持既有语义）
     onAuthFailure?.();
   }
 

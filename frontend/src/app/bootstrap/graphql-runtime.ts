@@ -3,9 +3,9 @@
 import { getCurrentAppRouterPath, navigateToLogin } from '@/app/router';
 
 import {
+  clearAuthSessionLocally,
   getAuthSessionAccessToken,
   hasCurrentAuthSession,
-  logoutAuthSession,
   resolveSessionExpiredLoginPath,
 } from '@/features/auth-session';
 
@@ -20,8 +20,11 @@ export function bootstrapGraphQLRuntime() {
     getAccessToken: getAuthSessionAccessToken,
     onAuthFailure: createGraphQLAuthFailureHandler({
       getCurrentPath: getCurrentAppRouterPath,
+      // 401 只代表「这个令牌失效」：只清本地，绝不清浏览器当前 Cookie
+      // （旧请求的迟到 401 不能误清新会话）
+      getCurrentAccessToken: getAuthSessionAccessToken,
       hasAuthSession: hasCurrentAuthSession,
-      logoutAuthSession,
+      clearAuthSessionLocally,
       navigateToLogin,
       resolveSessionExpiredLoginPath,
     }),

@@ -11,6 +11,7 @@ import { LoginByAccountIdUsecase } from '@src/usecases/auth/login-by-account-id.
 import { LoginWithPasswordUsecase } from '@src/usecases/auth/login-with-password.usecase';
 import { LoginWithThirdPartyUsecase } from '@src/usecases/auth/login-with-third-party.usecase';
 import { ResolveSessionRestrictionUsecase } from '@src/usecases/auth/resolve-session-restriction.usecase';
+import { ResolveWebSessionUsecase } from '@src/usecases/auth/resolve-web-session.usecase';
 import { ValidateAccessTokenSessionUsecase } from '@src/usecases/auth/validate-access-token-session.usecase';
 
 @Module({
@@ -24,6 +25,7 @@ import { ValidateAccessTokenSessionUsecase } from '@src/usecases/auth/validate-a
     EnrichLoginWithIdentityUsecase,
     ResolveSessionRestrictionUsecase,
     ValidateAccessTokenSessionUsecase,
+    ResolveWebSessionUsecase,
   ],
   exports: [
     LoginWithPasswordUsecase,
@@ -34,6 +36,7 @@ import { ValidateAccessTokenSessionUsecase } from '@src/usecases/auth/validate-a
     EnrichLoginWithIdentityUsecase,
     ResolveSessionRestrictionUsecase,
     ValidateAccessTokenSessionUsecase,
+    ResolveWebSessionUsecase,
   ],
 })
 export class AuthUsecasesModule {}

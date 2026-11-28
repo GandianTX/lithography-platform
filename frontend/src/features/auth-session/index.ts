@@ -29,16 +29,26 @@ export {
   resolveSafeReturnTo,
   resolveSessionExpiredLoginPath,
 } from './application/auth-session-policy';
-export type { AuthSessionIdentityRefreshOutcome } from './auth-session-entry';
+export type { WebSessionRestoreOutcome } from './application/restore-auth-session';
+export type {
+  AuthSessionIdentityRefreshOutcome,
+  LogoutAuthSessionOutcome,
+} from './auth-session-entry';
 export {
+  applyCrossTabSessionEvent,
+  clearAuthSessionLocally,
   clearSessionAfterPasswordChange,
+  ensureWebSessionRestored,
   getAuthSessionAccessToken,
   getCurrentAuthSession,
   hasCurrentAuthSession,
   logoutAuthSession,
+  logoutAuthSessionWithSignOut,
   refreshCurrentAuthSessionIdentity,
   sampleCurrentAuthSessionIdentity,
+  startAuthSessionCrossTabSync,
   updateCurrentAuthSessionNickname,
+  webSessionEnabled,
 } from './auth-session-entry';
 export {
   AUTH_LOGIN_REASON_PARAM_KEY,
@@ -47,10 +57,12 @@ export {
   composeLoginRedirectPath,
   composeProtectedRequestTarget,
   composeSessionExpiredLoginRedirectPath,
+  composeSessionUnavailableRedirectPath,
   extractUrlPathname,
   readAuthLoginReasonParam,
   readAuthReturnToFromRequest,
   readAuthReturnToParam,
+  SESSION_UNAVAILABLE_PATH,
 } from './infrastructure/auth-return-to-url';
 export { useAuthSession } from './ui/auth-session-context';
 export { AuthSessionPanel } from './ui/auth-session-panel';

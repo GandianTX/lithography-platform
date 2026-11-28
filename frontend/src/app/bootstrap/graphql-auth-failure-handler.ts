@@ -2,8 +2,22 @@
 
 export type GraphQLAuthFailureDependencies = {
   getCurrentPath: () => string | null;
+  /**
+   * 读取当前会话令牌（不参与展示）。
+   *
+   * 用于忽略「旧会话的迟到 401」：切换账号 / 退出重登后，旧请求的失败必须静默，
+   * 不能清理新会话、也不能清除浏览器里的新 Cookie。
+   */
+  getCurrentAccessToken?: () => string | null;
   hasAuthSession: () => boolean;
-  logoutAuthSession: () => Promise<void>;
+  /**
+   * **仅本地**清理（会话真源 + GraphQL 缓存）。
+   *
+   * 刻意不接服务端 sign-out：业务请求的 401 只代表「这个令牌失效」，
+   * 不代表浏览器当前 Cookie 也应被清掉——否则旧请求的迟到响应可能误清新会话。
+   * 服务端 Cookie 由主动退出（`logoutAuthSession`）或自然过期清除。
+   */
+  clearAuthSessionLocally: () => Promise<unknown>;
   navigateToLogin: (targetPath: string) => void;
   resolveSessionExpiredLoginPath: (currentPath: string | null) => string;
 };
@@ -13,14 +27,15 @@ export type GraphQLAuthFailureDependencies = {
 // 策略合成（固定失效原因 + 安全 returnTo），handler 不接触后端原始错误。
 export function createGraphQLAuthFailureHandler({
   getCurrentPath,
+  getCurrentAccessToken,
   hasAuthSession,
-  logoutAuthSession,
+  clearAuthSessionLocally,
   navigateToLogin,
   resolveSessionExpiredLoginPath,
 }: GraphQLAuthFailureDependencies) {
   let isHandlingAuthFailure = false;
 
-  return function handleGraphQLAuthFailure() {
+  return function handleGraphQLAuthFailure(info?: { accessToken?: string | null }) {
     if (isHandlingAuthFailure) {
       return;
     }
@@ -31,6 +46,15 @@ export function createGraphQLAuthFailureHandler({
       return;
     }
 
+    // 迟到失败：令牌已不是当前会话使用的令牌（切换账号 / 退出重登）→ 完全静默
+    if (info && 'accessToken' in info) {
+      const attemptedToken = info.accessToken ?? null;
+
+      if (attemptedToken === null || attemptedToken !== getCurrentAccessToken?.()) {
+        return;
+      }
+    }
+
     isHandlingAuthFailure = true;
 
     // 在清理前取得当前页面路径，保证 returnTo 反映失效前的站内页面。
@@ -38,8 +62,7 @@ export function createGraphQLAuthFailureHandler({
 
     void (async () => {
       try {
-        // 复用既有退出链路：先清 Session，后清 Apollo cache。
-        await logoutAuthSession();
+        await clearAuthSessionLocally();
       } catch {
         // 清理失败不能阻断安全回退；仍然返回登录页。
       } finally {

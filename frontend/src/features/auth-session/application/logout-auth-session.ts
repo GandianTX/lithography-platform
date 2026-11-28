@@ -14,9 +14,28 @@ export type AuthSessionIdentityClearer = {
   clearSessionIfIdentityMatches: (identity: AuthSessionIdentity | null) => boolean;
 };
 
+/**
+ * 服务端 sign-out（清浏览器 Cookie）的结果。
+ *
+ * `unsupported` 表示该部署未启用服务端会话（端点 404），不可能存在本功能下发的
+ * Cookie，因此可以继续本地退出。
+ */
+export type AuthSessionSignOutPort = {
+  revoke: () => Promise<'ok' | 'unsupported' | 'failed'>;
+};
+
+/**
+ * 主动退出结果：
+ * - `ok`：服务端 Cookie 已清除（或本来就没有会话），本地会话与缓存已清理
+ * - `sign-out-failed`：服务端清除失败，**本地会话保持不变**，调用方必须提示并允许重试
+ */
+export type LogoutAuthSessionOutcome = 'ok' | 'sign-out-failed';
+
 type LogoutAuthSessionDependencies = {
   cache: AuthSessionCacheClearer;
   session: AuthSessionClearer;
+  /** 未注入时退化为纯本地清理（既有调用点 / 单元测试语义不变） */
+  signOut?: AuthSessionSignOutPort;
 };
 
 type ConditionalLogoutAuthSessionDependencies = {
@@ -24,10 +43,26 @@ type ConditionalLogoutAuthSessionDependencies = {
   session: AuthSessionIdentityClearer;
 };
 
-export function createLogoutAuthSessionUsecase({ cache, session }: LogoutAuthSessionDependencies) {
-  return async function logoutAuthSession(): Promise<void> {
+export function createLogoutAuthSessionUsecase({
+  cache,
+  session,
+  signOut,
+}: LogoutAuthSessionDependencies) {
+  return async function logoutAuthSession(): Promise<LogoutAuthSessionOutcome> {
+    // 顺序是安全语义的一部分：先确认服务端 Cookie 已清除，再清本地。
+    // 反过来的话，清除失败会留下「本地已退出、新标签页仍能恢复」的假退出。
+    if (signOut) {
+      const result = await signOut.revoke();
+
+      if (result === 'failed') {
+        return 'sign-out-failed';
+      }
+    }
+
     session.clearSession();
     await cache.clearCache();
+
+    return 'ok';
   };
 }
 

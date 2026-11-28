@@ -39,6 +39,13 @@ export type AuthSessionStore = {
    */
   clearSessionIfIdentityMatches: (identity: AuthSessionIdentity | null) => boolean;
   establishSession: (input: EstablishAuthSessionInput) => void;
+  /**
+   * 只读会话代次（单调计数，不含任何凭据）。
+   *
+   * 供「启动恢复」判定迟到结果：请求发起前采样，回包时若代次已变化
+   * （期间发生了登录/退出/别的恢复），说明结果已过期，必须丢弃而不是落盘。
+   */
+  getSessionEpoch: () => number;
   getSnapshot: () => AuthSessionState;
   restoreSession: () => void;
   /** 请求发起前采样当前会话身份（不含 Token）；无会话时返回 null */
@@ -151,6 +158,9 @@ export function createAuthSessionStore(persistence: AuthSessionPersistence): Aut
       sessionEpoch += 1;
       persistence.write(session);
       publish({ session, status: 'authenticated' });
+    },
+    getSessionEpoch() {
+      return sessionEpoch;
     },
     getSnapshot() {
       return state;

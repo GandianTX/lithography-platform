@@ -63,6 +63,9 @@ QueryService / 同域写 Service
 - 将 `getAccessToken()` 接入前端 `configureGraphQLRuntime()`，后续受保护请求自动携带 `Authorization: Bearer <token>`。
 - 提供唯一的 Auth/Session owner，页面不得直接读写散落的 Token key。
 - 刷新浏览器后能从 `sessionStorage` 恢复当前标签页会话；不得把访问 Token 写入长期 `localStorage`。
+- 网页登录保持（`WEB_SESSION_ENABLED`，可选）启用时：登录改走同源 REST 并以下发 HttpOnly Cookie
+  供新标签页恢复同一会话，`restore` 不重签、不续期；关闭（默认）时保持上述 sessionStorage
+  行为不变（契约见 `backend/docs/api/auth-session-current.md`「网页登录保持」一节）。
 - 退出登录清除前端 Session、Apollo 缓存和角色状态，并跳转 `/login`。
 - 当前后端尚无可用 refresh/logout Mutation；第一版不得伪造自动刷新。Token 失效时清理 Session 并重新登录。
 - 未登录访问受保护路由时跳转 `/login`，并保留安全的原目标路径以便登录后返回。

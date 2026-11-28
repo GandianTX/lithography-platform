@@ -46,6 +46,21 @@ export function composeSessionExpiredLoginRedirectPath(requestedPath: string | n
   return composeLoginRedirectPath(requestedPath, AUTH_LOGIN_REASON_SESSION_EXPIRED);
 }
 
+/**
+ * 启动恢复无法确认会话时的落点（网络/服务故障，不是未登录）。
+ *
+ * 与登录页区分开：这里保留 returnTo 与重试入口，不清会话、不要求重新输入凭据。
+ */
+export const SESSION_UNAVAILABLE_PATH = '/session-unavailable';
+
+export function composeSessionUnavailableRedirectPath(requestedPath: string | null): string {
+  if (!requestedPath) {
+    return SESSION_UNAVAILABLE_PATH;
+  }
+
+  return `${SESSION_UNAVAILABLE_PATH}?${AUTH_RETURN_TO_PARAM_KEY}=${encodeURIComponent(requestedPath)}`;
+}
+
 export function extractUrlPathname(value: string): string {
   try {
     return new URL(value, 'https://lithography.local').pathname;

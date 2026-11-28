@@ -117,6 +117,13 @@ export async function executeGraphQL<TData, TVariables extends OperationVariable
   variables: TVariables,
   options: ExecuteGraphQLOptions = {},
 ): Promise<TData> {
+  // 记录本次请求实际使用的令牌：失效回调携带它，装配层才能区分
+  // 「当前会话失效」与「切换账号后旧请求的迟到 401」
+  const attemptedAccessToken =
+    options.authMode === 'none'
+      ? null
+      : (options.accessToken ?? getGraphQLRuntimeConfig().getAccessToken?.() ?? null);
+
   try {
     return await dispatchGraphQLRequest<TData, TVariables>(query, variables, options);
   } catch (error) {
@@ -137,14 +144,14 @@ export async function executeGraphQL<TData, TVariables extends OperationVariable
     if (!refreshSession) {
       // 没有刷新能力时（如当前 P0 登录链路），仍要宣布一次会话失效，
       // 由 app 装配决定清理与跳转，见 docs/project-convention/graphql-ingress-auth-boundary.md。
-      onAuthFailure?.();
+      onAuthFailure?.({ accessToken: attemptedAccessToken });
       throw ingressError;
     }
 
     try {
       await refreshSession();
     } catch {
-      onAuthFailure?.();
+      onAuthFailure?.({ accessToken: attemptedAccessToken });
       throw ingressError;
     }
 
@@ -158,6 +165,7 @@ export async function executeGraphQL<TData, TVariables extends OperationVariable
       });
 
       if (retryIngressError.type === 'auth') {
+        // 重试使用的是刷新后的新令牌，不携带旧令牌信息（保持既有语义）
         onAuthFailure?.();
       }
 

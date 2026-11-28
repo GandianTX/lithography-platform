@@ -5,36 +5,42 @@ import { MemoryRouter, Route, Routes } from 'react-router';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createTranslator, I18nContext } from '@/shared/i18n';
+import { MessageFeedbackProvider } from '@/shared/ui/message-feedback';
 
 import { authSessionStore } from '../auth-session-entry';
 
 import { AuthSessionPanel } from './auth-session-panel';
 import { AuthSessionProvider } from './auth-session-provider';
 
+// 侧栏退出按钮在「退出未完成」时会提示消息，需要应用根同一套消息反馈容器。
 function renderPanelRoute() {
   return render(
-    <AuthSessionProvider>
-      <MemoryRouter initialEntries={['/engineer']}>
-        <Routes>
-          <Route element={<AuthSessionPanel />} path="/engineer" />
-          <Route element={<div>login-page-marker</div>} path="/login" />
-        </Routes>
-      </MemoryRouter>
-    </AuthSessionProvider>,
+    <MessageFeedbackProvider>
+      <AuthSessionProvider>
+        <MemoryRouter initialEntries={['/engineer']}>
+          <Routes>
+            <Route element={<AuthSessionPanel />} path="/engineer" />
+            <Route element={<div>login-page-marker</div>} path="/login" />
+          </Routes>
+        </MemoryRouter>
+      </AuthSessionProvider>
+    </MessageFeedbackProvider>,
   );
 }
 
 /** 管理员首页「当前账号」卡形态：挂 /admin，并提供账号设置路由承接导航断言。 */
 function renderAccountPanelRoute() {
   return render(
-    <AuthSessionProvider>
-      <MemoryRouter initialEntries={['/admin']}>
-        <Routes>
-          <Route element={<AuthSessionPanel variant="account" />} path="/admin" />
-          <Route element={<div>account-settings-page-marker</div>} path="/account/settings" />
-        </Routes>
-      </MemoryRouter>
-    </AuthSessionProvider>,
+    <MessageFeedbackProvider>
+      <AuthSessionProvider>
+        <MemoryRouter initialEntries={['/admin']}>
+          <Routes>
+            <Route element={<AuthSessionPanel variant="account" />} path="/admin" />
+            <Route element={<div>account-settings-page-marker</div>} path="/account/settings" />
+          </Routes>
+        </MemoryRouter>
+      </AuthSessionProvider>
+    </MessageFeedbackProvider>,
   );
 }
 
@@ -44,14 +50,16 @@ function renderAccountPanelRouteInEnglish() {
     <I18nContext.Provider
       value={{ language: 'en', setLanguage: () => undefined, t: createTranslator('en') }}
     >
-      <AuthSessionProvider>
-        <MemoryRouter initialEntries={['/admin']}>
-          <Routes>
-            <Route element={<AuthSessionPanel variant="account" />} path="/admin" />
-            <Route element={<div>account-settings-page-marker</div>} path="/account/settings" />
-          </Routes>
-        </MemoryRouter>
-      </AuthSessionProvider>
+      <MessageFeedbackProvider>
+        <AuthSessionProvider>
+          <MemoryRouter initialEntries={['/admin']}>
+            <Routes>
+              <Route element={<AuthSessionPanel variant="account" />} path="/admin" />
+              <Route element={<div>account-settings-page-marker</div>} path="/account/settings" />
+            </Routes>
+          </MemoryRouter>
+        </AuthSessionProvider>
+      </MessageFeedbackProvider>
     </I18nContext.Provider>,
   );
 }
