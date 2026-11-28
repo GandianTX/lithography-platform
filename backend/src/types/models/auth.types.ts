@@ -42,6 +42,14 @@ export interface AuthLoginModel {
   audience: AudienceTypeEnum;
   /** 是否允许受限账号登录（默认 false，保持旧客户端行为） */
   allowRestrictedSession?: boolean;
+  /**
+   * 本次签发的 Access Token 有效期覆盖值（jsonwebtoken 时长格式，如 `8h`）。
+   *
+   * 只允许需要与全局 `JWT_EXPIRES_IN` 区分的入口传入（当前仅浏览器会话 REST 登录）；
+   * 缺省时不传，签发完全沿用 `JwtModule` 的全局 `signOptions.expiresIn`，因此
+   * GraphQL 登录、小程序第三方登录与 Refresh Token 的既有有效期不受影响。
+   */
+  accessTokenTtl?: string;
 }
 
 /**

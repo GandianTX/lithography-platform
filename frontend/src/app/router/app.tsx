@@ -53,6 +53,7 @@ import { RegisterCustomerPage } from '@/pages/register-customer';
 import { RegisterEngineerPage } from '@/pages/register-engineer';
 import { RepairRequestCreatePage } from '@/pages/repair-request-create';
 import { RestrictedPage } from '@/pages/restricted';
+import { SessionUnavailablePage } from '@/pages/session-unavailable';
 import { canAccessSharedUiGallery, SharedUiGalleryPage } from '@/pages/shared-ui-gallery';
 import { SyncConflictsPage } from '@/pages/sync-conflicts';
 import { Error403, Error404, Error500, ErrorRouteCrash } from '@/features/error-feedback';
@@ -124,6 +125,12 @@ const router = createBrowserRouter([
       {
         index: true,
         loader: indexRouteLoader,
+      },
+      {
+        // 启动恢复无法确认会话（网络/服务故障）时的重试页：不是「未登录」状态，
+        // 刻意不挂 loginLoader / protectedRouteLoader，避免与恢复判定互相触发
+        element: <SessionUnavailablePage />,
+        path: 'session-unavailable',
       },
       {
         element: <LoginPageRoute />,

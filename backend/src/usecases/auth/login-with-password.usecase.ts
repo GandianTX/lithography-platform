@@ -45,6 +45,7 @@ export class LoginWithPasswordUsecase {
     ip,
     audience,
     allowRestrictedSession,
+    accessTokenTtl,
   }: AuthLoginModel): Promise<EnrichedLoginResult> {
     try {
       // Validate: 验证登录凭据（同时计算会话限制状态）
@@ -107,7 +108,15 @@ export class LoginWithPasswordUsecase {
         credentialVersion: verifiedCredentialVersion,
         ...(hasRoles ? { activeRole: finalRole } : {}),
       };
-      const accessToken = this.tokenHelper.generateAccessToken({ payload, audience });
+      // 只有显式传入 `accessTokenTtl` 的入口（浏览器会话 REST 登录）会覆盖本次令牌有效期；
+      // 其余调用方不传，签发继续沿用 `JwtModule` 的全局 `JWT_EXPIRES_IN`，
+      // Refresh Token 仍由 `ExecuteLoginFlowUsecase` 按全局配置签发，不受此处影响。
+      const accessToken = this.tokenHelper.generateAccessToken({
+        payload,
+        audience,
+        ...(accessTokenTtl ? { expiresIn: accessTokenTtl } : {}),
+      });
+      const accessTokenExpiresAt = this.resolveAccessTokenExpiresAt(accessToken);
       const tokens = { accessToken, refreshToken: basicResult.tokens.refreshToken };
 
       // Enrich: 装配身份信息
@@ -135,6 +144,10 @@ export class LoginWithPasswordUsecase {
         ];
       }
 
+      // 把签发结果的到期事实交给适配器（浏览器 Cookie 的 Max-Age 必须不晚于令牌过期）。
+      // 这里只读令牌自身的 `exp`，不参与任何授权判定，也不改变其他调用方行为。
+      enrichedResult.accessTokenExpiresAt = accessTokenExpiresAt;
+
       return enrichedResult;
     } catch (error) {
       // 记录登录失败
@@ -146,6 +159,23 @@ export class LoginWithPasswordUsecase {
       // 直接重新抛出错误，让上层适配器处理
       throw error;
     }
+  }
+
+  /**
+   * 解析刚签发令牌的到期时刻。
+   *
+   * 只解码（不验签、不写日志、不记录令牌片段）：签发方刚生成的令牌必然可信；
+   * 解码失败返回 `null`，由调用方失败关闭（例如不下发浏览器 Cookie），
+   * 绝不以配置值猜测有效期。
+   */
+  private resolveAccessTokenExpiresAt(accessToken: string): Date | null {
+    const payload = this.tokenHelper.decodeToken({ token: accessToken });
+
+    if (!payload || typeof payload.exp !== 'number' || !Number.isFinite(payload.exp)) {
+      return null;
+    }
+
+    return new Date(payload.exp * 1000);
   }
 
   /**

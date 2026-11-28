@@ -168,6 +168,39 @@ export class TokenHelper {
     }
   }
 
+  /**
+   * 静默校验令牌（用于无 Authorization 头的入口，例如浏览器会话 Cookie 恢复）。
+   *
+   * 与 `verifyToken()` 的差异（刻意为之）：
+   * - 同时校验签发者与受众：Bearer 链路由 passport 按 `JWT_STRATEGY_OPTIONS` 校验
+   *   `issuer` / `audience`，恢复入口必须做同等校验，不能因为令牌来自 Cookie 就降级；
+   * - 失败时不记录任何令牌片段（`verifyToken()` 会记录 `tokenPrefix`，恢复路径禁止复用）；
+   * - 只表达「签名/签发者/受众/有效期不通过」，账号会话复核仍由
+   *   `ValidateAccessTokenSessionUsecase` 承担，本方法不读取数据库。
+   */
+  verifyTokenSilently({
+    token,
+    audience,
+    issuer,
+  }: {
+    token: string;
+    audience: string;
+    issuer?: string;
+  }): JwtPayload {
+    try {
+      return this.jwtService.verify<JwtPayload>(token, {
+        audience,
+        ...(issuer ? { issuer } : {}),
+      });
+    } catch (error) {
+      if (error instanceof TokenExpiredError) {
+        throw new DomainError(JWT_ERROR.TOKEN_EXPIRED, 'Token 已过期');
+      }
+
+      throw new DomainError(JWT_ERROR.TOKEN_INVALID, 'Token 无效或不属于当前入口');
+    }
+  }
+
   decodeToken({ token }: { token: string }): JwtPayload | null {
     try {
       const payload = this.jwtService.decode<JwtPayload>(token);

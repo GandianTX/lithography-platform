@@ -45,6 +45,7 @@ describe('LoginWithPasswordUsecase（注册审核前的登录阻断）', () => {
   } as unknown as EnrichLoginWithIdentityUsecase;
   const tokenHelper = {
     generateAccessToken: jest.fn(),
+    decodeToken: jest.fn(),
   } as unknown as TokenHelper;
   const logger = {
     setContext: jest.fn(),
@@ -90,7 +91,7 @@ describe('LoginWithPasswordUsecase（注册审核前的登录阻断）', () => {
     ...overrides,
   });
 
-  const login = (allowRestrictedSession?: boolean) =>
+  const login = (allowRestrictedSession?: boolean, accessTokenTtl?: string) =>
     usecase.execute({
       loginName: 'engineer-pending@example.com',
       loginPassword: 'PlainPassword1!',
@@ -98,6 +99,7 @@ describe('LoginWithPasswordUsecase（注册审核前的登录阻断）', () => {
       ip: '127.0.0.1',
       audience: AudienceTypeEnum.SJWEB,
       allowRestrictedSession,
+      ...(accessTokenTtl ? { accessTokenTtl } : {}),
     });
 
   beforeEach(() => {
@@ -114,6 +116,90 @@ describe('LoginWithPasswordUsecase（注册审核前的登录阻断）', () => {
 
   afterEach(() => {
     jest.restoreAllMocks();
+  });
+
+  /**
+   * 浏览器会话入口按次指定有效期：只在网页登录传入时覆盖本次签名，
+   * 其余入口不传，签名继续沿用全局 JWT_EXPIRES_IN。
+   */
+  describe('网页登录按次有效期（accessTokenTtl）', () => {
+    const arrangeSuccessfulLogin = () => {
+      (accountQueryService.findCredentialByLoginName as jest.Mock).mockResolvedValue(
+        credential(AccountStatus.ACTIVE),
+      );
+      (executeLoginFlowUsecase.execute as jest.Mock).mockResolvedValue({
+        tokens: { accessToken: 'basic-access', refreshToken: 'refresh-token' },
+        credentialVersion: 0,
+        accountId: 9001,
+        roleFromHint: IdentityTypeEnum.ENGINEER,
+        accessGroup: [IdentityTypeEnum.ENGINEER],
+        account: {
+          id: 9001,
+          loginName: 'engineer-pending',
+          loginEmail: 'engineer-pending@example.com',
+          status: AccountStatus.ACTIVE,
+          identityHint: IdentityTypeEnum.ENGINEER,
+          createdAt: new Date('2026-01-01T00:00:00Z'),
+          updatedAt: new Date('2026-01-01T00:00:00Z'),
+        },
+        userInfo: {
+          id: 1,
+          accountId: 9001,
+          nickname: '工程师',
+          avatarUrl: null,
+          createdAt: new Date('2026-01-01T00:00:00Z'),
+          updatedAt: new Date('2026-01-01T00:00:00Z'),
+        },
+      });
+      (decideLoginRoleUsecase.execute as jest.Mock).mockReturnValue({
+        finalRole: IdentityTypeEnum.ENGINEER,
+        reason: 'hint',
+      });
+      (tokenHelper.generateAccessToken as jest.Mock).mockReturnValue('signed-access-token');
+      (enrichLoginWithIdentityUsecase.execute as jest.Mock).mockResolvedValue({
+        accessToken: 'signed-access-token',
+        refreshToken: 'refresh-token',
+        accountId: 9001,
+        role: IdentityTypeEnum.ENGINEER,
+        restriction: SessionRestriction.NONE,
+        adminLevel: null,
+      });
+    };
+
+    it('未传入时不给签名选项加 expiresIn，回传令牌自身到期时刻', async () => {
+      arrangeSuccessfulLogin();
+      (tokenHelper.decodeToken as jest.Mock).mockReturnValue({ exp: 1_893_456_000 });
+
+      const result = await login(true);
+
+      expect(tokenHelper.generateAccessToken).toHaveBeenCalledWith({
+        payload: expect.any(Object),
+        audience: AudienceTypeEnum.SJWEB,
+      });
+      expect(result.accessTokenExpiresAt).toEqual(new Date(1_893_456_000 * 1000));
+    });
+
+    it('传入时按次覆盖 expiresIn，且不影响受众与其他签发参数', async () => {
+      arrangeSuccessfulLogin();
+      (tokenHelper.decodeToken as jest.Mock).mockReturnValue({ exp: 1_893_456_000 });
+
+      await login(true, '8h');
+
+      expect(tokenHelper.generateAccessToken).toHaveBeenCalledWith({
+        payload: expect.any(Object),
+        audience: AudienceTypeEnum.SJWEB,
+        expiresIn: '8h',
+      });
+    });
+
+    it('无法解析 exp 时回传 null，交由适配器失败关闭', async () => {
+      arrangeSuccessfulLogin();
+      (tokenHelper.decodeToken as jest.Mock).mockReturnValue(null);
+
+      const result = await login(true, '8h');
+
+      expect(result.accessTokenExpiresAt).toBeNull();
+    });
   });
 
   it.each([

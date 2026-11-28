@@ -461,6 +461,16 @@ export const EN_MESSAGES = {
   'auth.loginFailed': 'Sign-in failed. Please try again later.',
   'auth.invalidCredentials': 'Incorrect account or password. Check and try again.',
   'auth.sessionExpired': 'Your session has expired. Please sign in again.',
+  'auth.sessionUnavailableTitle': 'Cannot restore your sign-in right now',
+  'auth.sessionUnavailableDescription':
+    'The network or service is temporarily unavailable, so your sign-in state could not be confirmed. This does not mean you are signed out. Please retry.',
+  'auth.sessionUnavailableRetry': 'Retry',
+  'auth.sessionUnavailableRetryFailed':
+    'Still unable to restore your sign-in. Please try again later.',
+  'auth.sessionUnavailableGoLogin': 'Sign in with an account instead',
+  'auth.logoutIncomplete':
+    'Sign-out did not complete: the server has not cleared this browser credential yet. Please retry.',
+  'auth.logoutRetry': 'Retry sign-out',
   'auth.panel.unavailable': 'The current session is unavailable. Please sign in first.',
   'auth.panel.accountTitle': 'Current account',
   'auth.panel.accountId': 'Account ID: {id}',

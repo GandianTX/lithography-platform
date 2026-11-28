@@ -102,6 +102,16 @@ export interface EnrichedLoginResult {
 
   // 警告信息（仅在非理想路径返回）
   warnings?: string[];
+
+  /**
+   * 本次签发 Access Token 的到期时刻（来自令牌自身 `exp`）。
+   *
+   * 供需要把浏览器 Cookie 生命周期与令牌对齐的入口（浏览器会话 REST 登录）使用：
+   * 它是签发结果的事实，不参与任何授权判定；GraphQL 适配器不读取该字段，
+   * 因此既有登录响应契约不受影响。无法解析 `exp` 时为 `null`，调用方应失败关闭
+   * （不下发 Cookie）而不是猜测有效期。
+   */
+  accessTokenExpiresAt?: Date | null;
 }
 
 /**

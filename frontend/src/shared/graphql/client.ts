@@ -9,7 +9,14 @@ type GraphQLRuntimeConfig = {
   getAccessToken?: () => string | null | undefined;
   // 可选：未注入时受保护请求遇到 auth 错误会直接宣布失效（见 request.ts 与 ingress 契约）。
   refreshSession?: () => Promise<void>;
-  onAuthFailure?: () => void;
+  /**
+   * 宣布一次会话失效。
+   *
+   * `accessToken` 是**发起失败请求时实际使用的令牌**（匿名请求为 null）。
+   * 装配层据此忽略「旧会话的迟到 401」：切换账号/重新登录后，旧请求的失败
+   * 不得清理当前会话的 Cookie 或本地真源。
+   */
+  onAuthFailure?: (info?: { accessToken?: string | null }) => void;
 };
 
 let runtimeConfig: GraphQLRuntimeConfig = {};
